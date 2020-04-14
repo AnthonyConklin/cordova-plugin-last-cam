@@ -5,12 +5,55 @@ import CoreImage
 import MediaPlayer
 import UIKit
 import CameraManager
+import AVKit;
 
 let cameraManager = CameraManager()
 var parentView: UIView? = nil;
+var previewView: UIView? = nil;
 var view = UIView(frame: parentView!.bounds);
 
 var cameraStarted: Bool = false;
+var windowRect = CGRect()
+var deviceWidth = 0;
+var deviceHeight = 0;
+
+extension UIImage {
+
+    func save(at directory: FileManager.SearchPathDirectory,
+              pathAndImageName: String,
+              createSubdirectoriesIfNeed: Bool = true,
+              compressionQuality: CGFloat = 1.0)  -> URL? {
+        do {
+        let documentsDirectory = try FileManager.default.url(for: directory, in: .userDomainMask,
+                                                             appropriateFor: nil,
+                                                             create: false)
+        return save(at: documentsDirectory.appendingPathComponent(pathAndImageName),
+                    createSubdirectoriesIfNeed: createSubdirectoriesIfNeed,
+                    compressionQuality: compressionQuality)
+        } catch {
+            print("-- Error: \(error)")
+            return nil
+        }
+    }
+
+    func save(at url: URL,
+              createSubdirectoriesIfNeed: Bool = true,
+              compressionQuality: CGFloat = 1.0)  -> URL? {
+        do {
+            if createSubdirectoriesIfNeed {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                        withIntermediateDirectories: true,
+                                                        attributes: nil)
+            }
+            guard let data = jpegData(compressionQuality: compressionQuality) else { return nil }
+            try data.write(to: url)
+            return url
+        } catch {
+            print("-- Error: \(error)")
+            return nil
+        }
+    }
+}
 
 // MARK: BIG PICTURE FUNCTIONS
 @objc(LastCam) class LastCam: CDVPlugin {
@@ -26,12 +69,15 @@ var cameraStarted: Bool = false;
         let y:Int = command.arguments![1] as! Int;
         let width:Int = command.arguments![2] as! Int;
         let height:Int = command.arguments![3] as! Int;
+        deviceWidth = width;
+        deviceHeight = height;
 
         // get rid of the old view (causes issues if the app is resumed)
         parentView = nil;
 
         //make the view
         let viewRect = CGRect.init(x: x, y: y, width: width, height: height)
+        windowRect = CGRect.init(x: x, y: y, width: width, height: height)
 
         parentView = UIView(frame: viewRect)
         webView?.superview?.addSubview(parentView!)
@@ -44,13 +90,15 @@ var cameraStarted: Bool = false;
 
         cameraManager.cameraOutputMode = CameraOutputMode.stillImage;
         cameraManager.writeFilesToPhoneLibrary = false
+        cameraManager.imageAlbumName =  "uSync Images"
+        cameraManager.videoAlbumName =  "uSync Videos"
 
         cameraManager.addPreviewLayerToView(parentView!)
 
         // Add this in there, incase the camera session has already been created.
         cameraManager.resumeCaptureSession();
 
-        webView.superview?.bringSubview(toFront: webView);
+        webView.superview?.bringSubviewToFront(webView);
 
         cameraStarted = true;
 
@@ -81,12 +129,43 @@ var cameraStarted: Bool = false;
         if(!cameraStarted) {
             self.commandDelegate!.send(pluginResult, callbackId: command.callbackId);
         } else {
-            cameraManager.capturePictureWithCompletion({ (image, error) -> Void in
-                let base64Image = UIImageJPEGRepresentation(image!, 0.85)!
-                    .base64EncodedString(options: .lineLength64Characters)
-                pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: base64Image);
-                self.commandDelegate!.send(pluginResult, callbackId: command.callbackId);
+            cameraManager.capturePictureWithCompletion({ result in
+                switch result {
+                    case .failure:
+                        self.commandDelegate!.send(pluginResult, callbackId: command.callbackId);
+                        // error handling
+                    case .success(let content):
+                        let path = "photo/temp/img_" + String(Date().timeIntervalSince1970) + ".jpg";
+                        let image = content.asImage;
+                        // Save Image
+                        guard let imgPath = image?.save(at: .documentDirectory, pathAndImageName: path) else { return }
+                        
+                        // Inform JS of image capture
+                        pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: imgPath.absoluteString);
+                        self.commandDelegate!.send(pluginResult, callbackId: command.callbackId);
+                        
+                        // Show Preview of Image Captured
+                        previewView = UIImageView(image:image);
+                        previewView!.frame = windowRect;
+                        previewView!.backgroundColor = UIColor.darkGray;
+                        previewView!.contentMode = UIView.ContentMode.scaleAspectFit;
+                        self.webView?.superview?.addSubview(previewView!)
+                        self.webView.superview?.bringSubviewToFront(self.webView);
+                }
             });
+        }
+    }
+    
+    @objc(closePreview:)
+    func closePreview(command: CDVInvokedUrlCommand) {
+        var pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Camera session isn't started");
+        if(!cameraStarted) {
+            self.commandDelegate!.send(pluginResult, callbackId: command.callbackId);
+        } else {
+            previewView?.removeFromSuperview();
+            previewView = nil;
+            pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: "Preview Closed.");
+            self.commandDelegate!.send(pluginResult, callbackId: command.callbackId);
         }
     }
 
@@ -147,23 +226,36 @@ var cameraStarted: Bool = false;
             self.commandDelegate!.send(pluginResult, callbackId: command.callbackId);
         } else {
 
-            cameraManager.stopVideoRecording { (URL, error) in
+            cameraManager.stopVideoRecording { (Url, error) in
 
-                let asset = AVURLAsset(url: NSURL(fileURLWithPath: (URL?.absoluteString)!) as URL, options: nil)
+                let asset = AVURLAsset(url: NSURL(fileURLWithPath: (Url?.absoluteString)!) as URL, options: nil)
                 let imgGenerator = AVAssetImageGenerator(asset: asset)
-                let cgImage = try? imgGenerator.copyCGImage(at: CMTimeMake(0, 1), actualTime: nil);
+                let cgImage = try? imgGenerator.copyCGImage(at: CMTimeMake(value: 0, timescale: 1), actualTime: nil);
                 // !! check the error before proceeding
                 let uiImage = UIImage(cgImage: cgImage!)
-                let base64Image = UIImageJPEGRepresentation(uiImage, 0.85)!
+                let base64Image = uiImage.jpegData(compressionQuality: 0.85)!
                     .base64EncodedString(options: .lineLength64Characters)
 
-                let returnValues = [URL?.absoluteString, base64Image];
+                let returnValues = [Url?.absoluteString, base64Image];
 
                 pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: returnValues as [Any]);
                 self.commandDelegate!.send(pluginResult, callbackId: command.callbackId);
                 if(cameraManager.cameraOutputMode == .videoWithMic) {
                     cameraManager.cameraOutputMode = CameraOutputMode.stillImage;
                 }
+                let player = AVPlayer(url: URL(string: Url!.absoluteString)!);
+                let playerController = AVPlayerLayer(player: player);
+                
+                let previewView = UIView();
+                previewView.frame = windowRect;
+                playerController.frame = windowRect;
+                previewView.backgroundColor = UIColor.black;
+                previewView.layer.addSublayer(playerController);
+                
+                self.webView?.superview?.addSubview(previewView);
+                self.webView.superview?.bringSubviewToFront(self.webView);
+                
+                player.play();
             }
         }
 
