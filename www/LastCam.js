@@ -27,6 +27,10 @@ LastCam.switchFlash = function(onSuccess, onError) {
 	exec(onSuccess, onError, PLUGIN_NAME, "switchFlash", []);
 };
 
+LastCam.closePreview = function(onSuccess, onError) {
+	exec(onSuccess, onError, PLUGIN_NAME, "closePreview", []);
+};
+
 LastCam.takePicture = function(onSuccess, onError) {
 	exec(onSuccess, onError, PLUGIN_NAME, "takePicture", []);
 };
